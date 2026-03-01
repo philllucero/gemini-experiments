@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nebula AR | Interactive Hand Experience</title>
+    <link href="https://fonts.googleapis.com/css2?family=Doto:wght@400;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&display=swap');
+        
+        body { margin: 0; background-color: #000; overflow: hidden; font-family: 'Google Sans', sans-serif; color: white; }
+        .font-doto { font-family: 'Doto', monospace; }
+        .font-pixel { font-family: 'Pixelify Sans', sans-serif; }
+        
+        canvas { display: block; position: relative; z-index: 10; }
+        #output-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; z-index: 1; transform: scaleX(-1); opacity: 0.4; transition: opacity 0.5s; }
+        #video-input { display: none; }
+        
+        /* Standard Glass */
+        .glass { background: rgba(10, 15, 30, 0.4); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); }
+        
+        /* Luxurious Thick Refractive Glass */
+        .glass-thick {
+            background: linear-gradient(135deg, rgba(20, 30, 50, 0.45) 0%, rgba(10, 15, 30, 0.25) 100%);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-top: 1px solid rgba(255, 255, 255, 0.3);
+            border-left: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 
+                0 15px 35px rgba(0, 0, 0, 0.5), 
+                inset 0 2px 5px rgba(255, 255, 255, 0.2), 
+                inset 0 -5px 15px rgba(100, 150, 255, 0.15),
+                inset -3px 0 15px rgba(200, 100, 255, 0.08); /* Subtle prismatic edge */
+        }
+        
+        .glow-text { text-shadow: 0 0 15px rgba(100, 200, 255, 0.6), 0 0 30px rgba(100, 200, 255, 0.2); }
+        
+        #loading-screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 100; background: #000; transition: opacity 1s ease; }
+        .loader { width: 48px; height: 48px; border: 5px solid rgba(255,255,255,0.2); border-bottom-color: #FFF; border-radius: 50%; display: inline-block; box-sizing: border-box; animation: rotation 1s linear infinite; }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="loading-screen">
+        <div class="flex flex-col items-center text-center px-4" id="loading-content">
+            <span class="loader mb-4"></span>
+            <p class="text-sm tracking-[0.3em] uppercase font-doto text-blue-200">Initializing Link...</p>
+            <p class="text-xs text-white/50 mt-4 max-w-sm">Please allow camera access. If it fails, open this preview in a new tab.</p>
+        </div>
+    </div>
+
+    <!-- NEW: Initialization Prompt -->
+    <div id="init-prompt" class="fixed inset-0 flex flex-col items-center justify-center z-40 pointer-events-none opacity-0 transition-opacity duration-700 scale-95 transform">
+        <div class="glass-thick px-14 py-12 rounded-[2.5rem] text-center flex flex-col items-center shadow-[0_0_80px_rgba(50,150,255,0.15)]">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-14 h-14 mb-5 text-blue-400 animate-pulse drop-shadow-[0_0_15px_rgba(100,200,255,0.5)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+            <p class="text-3xl tracking-[0.4em] font-pixel glow-text mb-3 uppercase">Subject Detected</p>
+            <p class="text-xs text-blue-300/80 font-doto tracking-widest uppercase border-t border-white/10 pt-4">Close your fist to initialize</p>
+        </div>
+    </div>
+
+    <div id="ui-overlay" class="fixed inset-0 pointer-events-none z-50 flex flex-col justify-between p-8 md:p-12 transition-opacity duration-1000 opacity-0">
+        
+        <!-- TOP ROW: Title & Status -->
+        <div class="flex justify-between items-start w-full">
+            <!-- Top Left: Title -->
+            <div class="space-y-2">
+                <h1 class="text-5xl font-pixel glow-text tracking-wider">Nebula<span class="text-blue-400">.AR</span></h1>
+                <p class="text-[10px] tracking-[0.2em] text-blue-300/70 font-doto uppercase">Spatial Particle Field v1.2</p>
+            </div>
+            
+            <!-- Top Right: Tracking Status -->
+            <div class="glass-thick px-6 py-4 rounded-3xl text-right flex flex-col items-end">
+                <p class="text-[9px] uppercase tracking-[0.2em] text-white/50 mb-1">System Status</p>
+                <div class="flex items-center gap-2">
+                    <div id="status-indicator" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+                    <p id="status-text" class="text-sm font-doto text-emerald-400 font-bold tracking-widest">AWAITING FEED</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOTTOM ROW: Controls & Telemetry -->
+        <div class="flex justify-between items-end w-full pb-2">
+            
+            <!-- Bottom Left: Controls & Camera -->
+            <div class="flex gap-4 items-end">
+                <!-- Controls Panel (Moved to left) -->
+                <div class="glass-thick p-6 rounded-3xl text-xs flex flex-col justify-center w-[220px] h-[160px]">
+                    <p class="font-doto text-blue-400 mb-3 border-b border-white/10 pb-2 tracking-widest text-[11px] uppercase flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M4 18h16a2 2 0 002-2V6a2 2 0 00-2-2H4a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                        Controls
+                    </p>
+                    <div class="space-y-3">
+                        <div class="flex justify-between items-center"><span class="text-white/90">Open/Close</span> <span class="font-doto text-blue-300/70 text-[10px]">SCALE</span></div>
+                        <div class="flex justify-between items-center"><span class="text-white/90">Move Hand</span> <span class="font-doto text-blue-300/70 text-[10px]">NAVIGATE</span></div>
+                    </div>
+                </div>
+
+                <!-- Camera Toggle Button (Moved to right of Controls) -->
+                <button onclick="toggleVideo()" class="glass-thick pointer-events-auto p-4 rounded-full hover:bg-white/10 transition-all hover:scale-105 active:scale-95 h-fit shadow-lg mb-2 border border-white/20">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-white/80 drop-shadow-md" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Bottom Right: Telemetry -->
+            <div class="glass-thick p-6 rounded-3xl min-w-[240px] h-[160px] flex flex-col justify-center">
+                <p class="font-doto text-[11px] text-blue-400 uppercase tracking-widest mb-3 border-b border-white/10 pb-2 flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    Telemetry
+                </p>
+                <div class="space-y-1.5 font-doto text-xs text-white/80">
+                    <div class="flex justify-between gap-4"><span>X-AXIS:</span> <span id="tel-x" class="text-blue-200">0.00</span></div>
+                    <div class="flex justify-between gap-4"><span>Y-AXIS:</span> <span id="tel-y" class="text-blue-200">0.00</span></div>
+                    <div class="flex justify-between gap-4"><span>Z-DEPTH:</span> <span id="tel-z" class="text-blue-200">0.00</span></div>
+                    <div class="flex justify-between gap-4"><span>PINCH:</span> <span id="tel-pinch" class="text-blue-200">0%</span></div>
+                    <div class="flex justify-between gap-4"><span>VOLUME:</span> <span id="tel-openness" class="text-blue-200">0%</span></div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <canvas id="output-canvas"></canvas>
+    <video id="video-input"></video>
+
+    <script>
+        // --- Configuration ---
+        const PARTICLE_COUNT = 15000;
+        const PARTICLE_SIZE = 0.08;
+
+        let scene, camera, renderer, particles, particlePositions, velocities, colors;
+        let offsets;
+        let videoElement, hands, cameraHelper;
+        let targetPoints = [];
+        let isPinching = false;
+        
+        // NEW: App State
+        let isHandDetected = false;
+        let isInitialized = false;
+        let currentOpenness = 1.0; // 0 = fist, 1 = fully open
+        let targetOpacity = 0.0;
+
+        const telX = document.getElementById('tel-x');
+        const telY = document.getElementById('tel-y');
+        const telPinch = document.getElementById('tel-pinch');
+        const telOpenness = document.getElementById('tel-openness');
+        const statusText = document.getElementById('status-text');
+        const statusIndicator = document.getElementById('status-indicator');
+        const initPrompt = document.getElementById('init-prompt');
+        const uiOverlay = document.getElementById('ui-overlay');
+
+        // --- Core Setup ---
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 15;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            const geometry = new THREE.BufferGeometry();
+            particlePositions = new Float32Array(PARTICLE_COUNT * 3);
+            velocities = new Float32Array(PARTICLE_COUNT * 3);
+            colors = new Float32Array(PARTICLE_COUNT * 3);
+            offsets = new Float32Array(PARTICLE_COUNT * 3);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                // Initialize at center
+                particlePositions[i * 3] = 0;
+                particlePositions[i * 3 + 1] = 0;
+                particlePositions[i * 3 + 2] = 0;
+
+                velocities[i * 3] = 0;
+                velocities[i * 3 + 1] = 0;
+                velocities[i * 3 + 2] = 0;
+
+                // Create a spherical distribution for the swarm volume
+                const u = Math.random();
+                const v = Math.random();
+                const theta = 2 * Math.PI * u;
+                const phi = Math.acos(2 * v - 1);
+                const r = Math.cbrt(Math.random()) * 50; // Radius 50 fills screen
+
+                offsets[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+                offsets[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+                offsets[i * 3 + 2] = r * Math.cos(phi);
+
+                // Pure White/Silver Gradient
+                const mix = Math.random();
+                colors[i * 3] = 0.85 + mix * 0.15; // R
+                colors[i * 3 + 1] = 0.95 + mix * 0.05; // G
+                colors[i * 3 + 2] = 1.0; // B
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            // Create circular texture
+            const canvas = document.createElement('canvas');
+            canvas.width = 32; canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            ctx.beginPath();
+            ctx.arc(16, 16, 15, 0, 2 * Math.PI);
+            ctx.fillStyle = 'white';
+            ctx.fill();
+            const circleTexture = new THREE.CanvasTexture(canvas);
+
+            const material = new THREE.PointsMaterial({
+                size: PARTICLE_SIZE,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.0, // Start invisible
+                map: circleTexture,
+                alphaTest: 0.1,
+                blending: THREE.AdditiveBlending,
+                sizeAttenuation: true
+            });
+
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            window.addEventListener('resize', onWindowResize, false);
+            setupTracking();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Tracking Setup ---
+        function setupTracking() {
+            videoElement = document.getElementById('video-input');
+            
+            hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+
+            hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.6,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+
+            cameraHelper = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({ image: videoElement });
+                },
+                width: 640,
+                height: 480
+            });
+            
+            cameraHelper.start().then(() => {
+                document.getElementById('loading-screen').style.opacity = '0';
+                setTimeout(() => {
+                    document.getElementById('loading-screen').style.display = 'none';
+                }, 1000);
+            }).catch(err => {
+                console.error("Camera error:", err);
+                document.getElementById('loading-content').innerHTML = `
+                    <p class="text-sm tracking-[0.3em] uppercase font-doto text-red-400 mb-2">Camera Access Denied</p>
+                    <p class="text-xs text-white/70 max-w-sm">Please allow camera permissions or open this preview in a new window to enable the AR features.</p>
+                `;
+            });
+        }
+
+        function onResults(results) {
+            const canvasCtx = document.getElementById('output-canvas').getContext('2d');
+            const canvasEl = document.getElementById('output-canvas');
+            
+            if (canvasEl.width !== results.image.width) {
+                canvasEl.width = results.image.width;
+                canvasEl.height = results.image.height;
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
+
+            targetPoints = [];
+            isPinching = false;
+            isFist = false;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandDetected = true;
+                statusText.innerText = "LINK ACTIVE";
+                statusText.className = "text-sm font-doto text-blue-400 font-bold tracking-widest";
+                statusIndicator.className = "w-2 h-2 rounded-full bg-blue-400 animate-pulse";
+                
+                results.multiHandLandmarks.forEach(landmarks => {
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: 'rgba(255, 255, 255, 0.4)', lineWidth: 2});
+                    drawLandmarks(canvasCtx, landmarks, {color: 'rgba(255, 255, 255, 0.9)', lineWidth: 1, radius: 2});
+
+                    const wrist = landmarks[0];
+                    const thumbTip = landmarks[4];
+                    const indexMCP = landmarks[5];
+                    const indexTip = landmarks[8];
+                    const middleTip = landmarks[12];
+                    const ringTip = landmarks[16];
+                    const pinkyTip = landmarks[20];
+
+                    const handScale = Math.hypot(indexMCP.x - wrist.x, indexMCP.y - wrist.y);
+
+                    const tx = (1 - indexTip.x - 0.5) * 35;
+                    const ty = (0.5 - indexTip.y) * 25;
+                    const tz = (handScale - 0.15) * 120; // Depth sensitivity
+
+                    targetPoints.push({ x: tx, y: ty, z: tz });
+
+                    const dx = indexTip.x - thumbTip.x;
+                    const dy = indexTip.y - thumbTip.y;
+                    const distPinch = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (distPinch < 0.05) isPinching = true;
+
+                    // Calculate continuous hand openness (0.0 to 1.0)
+                    const distIndex = Math.hypot(indexTip.x - wrist.x, indexTip.y - wrist.y);
+                    const distMiddle = Math.hypot(middleTip.x - wrist.x, middleTip.y - wrist.y);
+                    const distRing = Math.hypot(ringTip.x - wrist.x, ringTip.y - wrist.y);
+                    const distPinky = Math.hypot(pinkyTip.x - wrist.x, pinkyTip.y - wrist.y);
+                    
+                    const avgDist = (distIndex + distMiddle + distRing + distPinky) / 4;
+                    const fistRatio = avgDist / handScale;
+                    
+                    // Map ratio (approx 1.2 closed to 2.2 open) to 0-1 range
+                    let rawOpenness = (fistRatio - 1.2) / 1.0;
+                    rawOpenness = Math.max(0, Math.min(1, rawOpenness));
+                    
+                    // Smoothly update the openness state to prevent jitter
+                    currentOpenness += (rawOpenness - currentOpenness) * 0.2;
+
+                    telX.innerText = tx.toFixed(2);
+                    telY.innerText = ty.toFixed(2);
+                    document.getElementById('tel-z').innerText = tz.toFixed(2);
+                    telPinch.innerText = distPinch < 0.05 ? "100%" : (Math.max(0, 100 - (distPinch*500))).toFixed(0) + "%";
+                    telOpenness.innerText = Math.round(currentOpenness * 100) + "%";
+                });
+
+                // Set target opacity high when hand is visible
+                targetOpacity = 0.8;
+
+                // Initialization Logic
+                if (!isInitialized) {
+                    initPrompt.style.opacity = '1';
+                    initPrompt.style.transform = 'scale(1)';
+                    if (currentOpenness < 0.15) { // Fist closed
+                        isInitialized = true;
+                        initPrompt.style.opacity = '0';
+                        initPrompt.style.pointerEvents = 'none';
+                        uiOverlay.style.opacity = '1';
+                    }
+                }
+
+            } else {
+                isHandDetected = false;
+                targetOpacity = 0.0; // Fade out when hand is lost
+                statusText.innerText = "SCANNING...";
+                statusText.className = "text-sm font-doto text-emerald-400 font-bold tracking-widest";
+                statusIndicator.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse";
+            }
+            canvasCtx.restore();
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smoothly fade particles in/out based on hand detection and initialization
+            if (isInitialized) {
+                particles.material.opacity += (targetOpacity - particles.material.opacity) * 0.05;
+            }
+
+            const positions = particles.geometry.attributes.position.array;
+            
+            // Continuous particle size scaling
+            let targetSize = PARTICLE_SIZE * (0.4 + currentOpenness * 1.6);
+            particles.material.size += (targetSize - particles.material.size) * 0.1;
+
+            // Global rotation angle for the counter-clockwise idle spin
+            const angle = Date.now() * 0.0005;
+            const cosA = Math.cos(angle);
+            const sinA = Math.sin(angle);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const ix = i * 3;
+                const iy = i * 3 + 1;
+                const iz = i * 3 + 2;
+                
+                // Base state: High friction prevents pulsing/bouncing
+                let currentFriction = 0.85; 
+
+                // Continuous volume scaling based on how open the hand is
+                // 0.015 (tiny fist sphere) to 1.0 (full open swarm)
+                let volumeScale = 0.015 + (currentOpenness * 0.985); 
+
+                if (targetPoints.length > 0 && isInitialized) {
+                    targetPoints.forEach(target => {
+                        // Mathematically rotate the offsets so they orbit the HAND center locally
+                        const ox = offsets[ix];
+                        const oy = offsets[iy];
+                        const oz = offsets[iz];
+
+                        const rotX = ox * cosA - oz * sinA;
+                        const rotZ = ox * sinA + oz * cosA;
+
+                        // Calculate absolute exact point this particle should be at
+                        const exactTargetX = target.x + (rotX * volumeScale);
+                        const exactTargetY = target.y + (oy * volumeScale);
+                        const exactTargetZ = target.z + (rotZ * volumeScale);
+
+                        // Dynamic spring strength: Tighter when closed, looser when open
+                        const springStrength = 0.06 - (currentOpenness * 0.03);
+                        velocities[ix] += (exactTargetX - positions[ix]) * springStrength;
+                        velocities[iy] += (exactTargetY - positions[iy]) * springStrength;
+                        velocities[iz] += (exactTargetZ - positions[iz]) * springStrength;
+
+                        // Add microscopic wander proportional to openness so it feels alive when open
+                        if (currentOpenness > 0.1) {
+                            const wander = currentOpenness * 0.01;
+                            velocities[ix] += (Math.random() - 0.5) * wander;
+                            velocities[iy] += (Math.random() - 0.5) * wander;
+                            velocities[iz] += (Math.random() - 0.5) * wander;
+                        }
+                    });
+                } else if (isInitialized) {
+                    // Hand removed but initialized: Return to center slowly, scale down slightly
+                    const rotX = offsets[ix] * cosA - offsets[iz] * sinA;
+                    const rotZ = offsets[ix] * sinA + offsets[iz] * cosA;
+
+                    velocities[ix] += (rotX * 0.5 - positions[ix]) * 0.01;
+                    velocities[iy] += (offsets[iy] * 0.5 - positions[iy]) * 0.01;
+                    velocities[iz] += (rotZ * 0.5 - positions[iz]) * 0.01;
+                }
+
+                // Apply velocity
+                positions[ix] += velocities[ix];
+                positions[iy] += velocities[iy];
+                positions[iz] += velocities[iz];
+
+                // Apply massive friction to completely kill bouncy momentum
+                velocities[ix] *= currentFriction;
+                velocities[iy] *= currentFriction;
+                velocities[iz] *= currentFriction;
+            }
+
+            particles.geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        function toggleVideo() {
+            const v = document.getElementById('output-canvas');
+            v.style.opacity = v.style.opacity === '0' ? '0.4' : '0';
+        }
+
+        // Initialize on Load
+        window.onload = () => {
+            init();
+            animate();
+        };
+
+    </script>
+</body>
+</html>
